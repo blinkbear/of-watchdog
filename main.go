@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -63,6 +62,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s", err.Error())
 		os.Exit(1)
+	}
+	stopCh := signal.SetupSignalHandler()
+	if watchdogConfig.Batching {
+		log.Println("Batching is enabled.")
 	}
 
 	requestHandler := buildRequestHandler(watchdogConfig, watchdogConfig.PrefixLogs)

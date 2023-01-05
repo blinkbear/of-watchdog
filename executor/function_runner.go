@@ -14,10 +14,9 @@ type FunctionRunner interface {
 
 // FunctionRequest stores request for function execution
 type FunctionRequest struct {
-	Process     string
-	ProcessArgs []string
-	Environment []string
-
+	Process       string
+	ProcessArgs   []string
+	Environment   []string
 	InputReader   io.ReadCloser
 	OutputWriter  io.Writer
 	ContentLength *int64

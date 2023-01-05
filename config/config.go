@@ -19,14 +19,15 @@ type WatchdogConfig struct {
 	HTTPWriteTimeout    time.Duration
 	ExecTimeout         time.Duration
 	HealthcheckInterval time.Duration
-
-	FunctionProcess  string
-	ContentType      string
-	InjectCGIHeaders bool
-	OperationalMode  int
-	SuppressLock     bool
-	UpstreamURL      string
-	StaticPath       string
+	Batching            bool
+	Threadiness         int
+	FunctionProcess     string
+	ContentType         string
+	InjectCGIHeaders    bool
+	OperationalMode     int
+	SuppressLock        bool
+	UpstreamURL         string
+	StaticPath          string
 
 	// BufferHTTPBody buffers the HTTP body in memory
 	// to prevent transfer type of chunked encoding
@@ -108,6 +109,21 @@ func New(env []string) (WatchdogConfig, error) {
 		staticPath = val
 	}
 
+	batching := false
+	if val, exists := envMap["batching"]; exists {
+		res, err := strconv.ParseBool(val)
+		if err == nil {
+			batching = res
+		}
+	}
+	threadiness := 1
+	if val, exists := envMap["threadiness"]; exists {
+		res, err := strconv.Atoi(val)
+		if err == nil {
+			threadiness = res
+		}
+	}
+
 	writeTimeout := getDuration(envMap, "write_timeout", time.Second*10)
 	healthcheckInterval := writeTimeout
 	if val, exists := envMap["healthcheck_interval"]; exists {
@@ -128,6 +144,8 @@ func New(env []string) (WatchdogConfig, error) {
 		HealthcheckInterval: healthcheckInterval,
 		FunctionProcess:     functionProcess,
 		StaticPath:          staticPath,
+		Batching:            batching,
+		Threadiness:         threadiness,
 		InjectCGIHeaders:    true,
 		ExecTimeout:         getDuration(envMap, "exec_timeout", time.Second*10),
 		OperationalMode:     ModeStreaming,
@@ -209,17 +227,13 @@ func getInt(env map[string]string, key string, defaultValue int) int {
 }
 
 func getBool(env map[string]string, key string) bool {
-	if env[key] == "true" {
-		return true
-	}
-
-	return false
+	return env[key] == "true"
 }
 
 func getBools(env map[string]string, key ...string) bool {
 	v := false
 	for _, k := range key {
-		if getBool(env, k) == true {
+		if getBool(env, k) {
 			v = true
 			break
 		}
