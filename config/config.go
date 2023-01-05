@@ -20,14 +20,17 @@ type WatchdogConfig struct {
 	ExecTimeout         time.Duration
 	HealthcheckInterval time.Duration
 	Batching            bool
-	Threadiness         int
-	FunctionProcess     string
-	ContentType         string
-	InjectCGIHeaders    bool
-	OperationalMode     int
-	SuppressLock        bool
-	UpstreamURL         string
-	StaticPath          string
+	BatchSize           int
+	BatchWaitTimeout    time.Duration
+
+	Threadiness      int
+	FunctionProcess  string
+	ContentType      string
+	InjectCGIHeaders bool
+	OperationalMode  int
+	SuppressLock     bool
+	UpstreamURL      string
+	StaticPath       string
 
 	// BufferHTTPBody buffers the HTTP body in memory
 	// to prevent transfer type of chunked encoding
@@ -123,7 +126,14 @@ func New(env []string) (WatchdogConfig, error) {
 			threadiness = res
 		}
 	}
-
+	batchsize := 1
+	if val, exists := envMap["batchsize"]; exists {
+		res, err := strconv.Atoi(val)
+		if err == nil {
+			batchsize = res
+		}
+	}
+	batchWaitTimeout := getDuration(envMap, "batch_wait_timeout", time.Millisecond*500)
 	writeTimeout := getDuration(envMap, "write_timeout", time.Second*10)
 	healthcheckInterval := writeTimeout
 	if val, exists := envMap["healthcheck_interval"]; exists {
@@ -146,6 +156,8 @@ func New(env []string) (WatchdogConfig, error) {
 		StaticPath:          staticPath,
 		Batching:            batching,
 		Threadiness:         threadiness,
+		BatchSize:           batchsize,
+		BatchWaitTimeout:    batchWaitTimeout,
 		InjectCGIHeaders:    true,
 		ExecTimeout:         getDuration(envMap, "exec_timeout", time.Second*10),
 		OperationalMode:     ModeStreaming,

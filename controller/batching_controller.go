@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -19,12 +20,11 @@ import (
 
 type BatchingController struct {
 	batchSize            int
-	batchMaxWait         time.Duration
+	batchWaitTimeout     time.Duration
 	batchDataList        []BatchData
 	InputQueue           workqueue.RateLimitingInterface
 	ResultQueue          workqueue.RateLimitingInterface
 	checkBatchDataLength chan bool
-	dataType             string
 	functionInvoker      executor.StreamingFunctionRunner
 	watchdogConfig       config.WatchdogConfig
 	rwMutex              sync.RWMutex
@@ -34,25 +34,29 @@ type Env struct {
 	Header           string
 	RawQuery         string
 	Path             string
+	Method           string
 	TransferEncoding string
 }
 
 type BatchData struct {
 	Envs   Env
 	Inputs string
-	Uuid   string
 }
 
 // NewBatchingController creates a new BatchingController
-func NewBatchingController(batchSize int, batchMaxWait time.Duration, dataType string, inputQueue workqueue.RateLimitingInterface, resultQueue workqueue.RateLimitingInterface, functionInvoker executor.StreamingFunctionRunner, watchdogConfig config.WatchdogConfig) *BatchingController {
+func NewBatchingController(watchdogConfig config.WatchdogConfig, inputQueue workqueue.RateLimitingInterface, resultQueue workqueue.RateLimitingInterface) *BatchingController {
+	functionInvoker := executor.StreamingFunctionRunner{
+		ExecTimeout:   watchdogConfig.ExecTimeout,
+		LogPrefix:     watchdogConfig.PrefixLogs,
+		LogBufferSize: watchdogConfig.LogBufferSize,
+	}
 	return &BatchingController{
-		batchSize:            batchSize,
-		batchMaxWait:         batchMaxWait,
+		batchSize:            watchdogConfig.BatchSize,
+		batchWaitTimeout:     watchdogConfig.BatchWaitTimeout,
 		batchDataList:        make([]BatchData, 0),
 		InputQueue:           inputQueue,
 		ResultQueue:          resultQueue,
 		checkBatchDataLength: make(chan bool),
-		dataType:             dataType,
 		functionInvoker:      functionInvoker,
 		watchdogConfig:       watchdogConfig,
 		rwMutex:              sync.RWMutex{},
@@ -69,17 +73,22 @@ func (c *BatchingController) checkBatchDataMapLength() {
 	}
 }
 
-// Start starts the batching controller
-func (c *BatchingController) Start(threadiness int, stopCh <-chan struct{}) {
-	for i := 0; i < threadiness; i++ {
+// Run the batching controller
+func (c *BatchingController) Run(stopCh <-chan struct{}) {
+	defer c.InputQueue.ShutDown()
+	defer c.ResultQueue.ShutDown()
+	klog.Info("Starting batching controller")
+
+	for i := 0; i < c.watchdogConfig.Threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 		go wait.Until(c.checkBatchDataMapLength, time.Second, stopCh)
 	}
 	for {
 		select {
 		case <-stopCh:
+			klog.Info("Shutting down batching controller")
 			return
-		case <-time.After(c.batchMaxWait):
+		case <-time.After(c.batchWaitTimeout):
 			c.processBatch()
 		case <-c.checkBatchDataLength:
 			c.processBatch()
@@ -169,7 +178,10 @@ func (c *BatchingController) processBatch() {
 				environment = append(environment, env.Header)
 				environment = append(environment, env.RawQuery)
 				environment = append(environment, env.Path)
+				environment = append(environment, env.Method)
 				environment = append(environment, env.TransferEncoding)
+				os_env := os.Environ()
+				environment = append(environment, os_env...)
 			}
 			commandName, arguments := c.watchdogConfig.Process()
 			req := executor.FunctionRequest{

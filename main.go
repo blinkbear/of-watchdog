@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -20,9 +22,12 @@ import (
 
 	limiter "github.com/openfaas/faas-middleware/concurrency-limiter"
 	"github.com/openfaas/of-watchdog/config"
+	controller "github.com/openfaas/of-watchdog/controller"
 	"github.com/openfaas/of-watchdog/executor"
 	"github.com/openfaas/of-watchdog/metrics"
+	signals "github.com/openfaas/of-watchdog/signal"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"k8s.io/client-go/util/workqueue"
 )
 
 var (
@@ -62,10 +67,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s", err.Error())
 		os.Exit(1)
-	}
-	stopCh := signal.SetupSignalHandler()
-	if watchdogConfig.Batching {
-		log.Println("Batching is enabled.")
 	}
 
 	requestHandler := buildRequestHandler(watchdogConfig, watchdogConfig.PrefixLogs)
@@ -184,7 +185,13 @@ func buildRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool) 
 
 	switch watchdogConfig.OperationalMode {
 	case config.ModeStreaming:
-		requestHandler = makeStreamingRequestHandler(watchdogConfig, prefixLogs, watchdogConfig.LogBufferSize)
+		if watchdogConfig.Batching {
+			log.Println("Batching is enabled, use batching streaming mode with batch size:", watchdogConfig.BatchSize, "and timeout:", watchdogConfig.BatchWaitTimeout, "seconds")
+			requestHandler = makeBatchingStreamingRequestHandler(watchdogConfig)
+		} else {
+			log.Println("Batching is not enabled, use default streaming mode")
+			requestHandler = makeStreamingRequestHandler(watchdogConfig, prefixLogs, watchdogConfig.LogBufferSize)
+		}
 	case config.ModeSerializing:
 		requestHandler = makeSerializingForkRequestHandler(watchdogConfig, prefixLogs)
 	case config.ModeHTTP:
@@ -250,6 +257,57 @@ func makeSerializingForkRequestHandler(watchdogConfig config.WatchdogConfig, log
 	}
 }
 
+func makeBatchingStreamingRequestHandler(watchdogConfig config.WatchdogConfig) func(http.ResponseWriter, *http.Request) {
+	stopCh := signals.SetupSignalHandler()
+	log.Println("Batching is enabled.")
+	inputQueue := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "input_queue")
+	resultQueue := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "result_queue")
+	batchingController := controller.NewBatchingController(watchdogConfig, inputQueue, resultQueue)
+	go batchingController.Run(stopCh)
+	return func(w http.ResponseWriter, r *http.Request) {
+		batchData := controller.BatchData{
+			Envs: controller.Env{
+				Header:           "",
+				RawQuery:         "",
+				Path:             "",
+				TransferEncoding: "",
+				Method:           "",
+			},
+			Inputs: "",
+		}
+		if watchdogConfig.InjectCGIHeaders {
+			getEnvironmentBatchData(r, batchData)
+		}
+		requestBody, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		batchData.Inputs = string(requestBody)
+		inputQueue.Add(batchData)
+		obj, shutdown := resultQueue.Get()
+		if shutdown {
+			log.Println("resultQueue is shutdown")
+			return
+		}
+		output, err := func(obj interface{}) (string, error) {
+			defer resultQueue.Done(obj)
+			if data, ok := obj.(string); ok {
+				resultQueue.Forget(obj)
+				return data, nil
+			}
+			resultQueue.Forget(obj)
+			return "", errors.New("resultQueue data is not string")
+		}(obj)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		w.Header().Set("Content-Type", watchdogConfig.ContentType)
+		w.Write([]byte(output))
+	}
+}
+
 func makeStreamingRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool, logBufferSize int) func(http.ResponseWriter, *http.Request) {
 	functionInvoker := executor.StreamingFunctionRunner{
 		ExecTimeout:   watchdogConfig.ExecTimeout,
@@ -283,6 +341,27 @@ func makeStreamingRequestHandler(watchdogConfig config.WatchdogConfig, prefixLog
 			// w.WriteHeader(500)
 			// w.Write([]byte(err.Error()))
 		}
+	}
+}
+
+func getEnvironmentBatchData(r *http.Request, batchData controller.BatchData) {
+
+	for k, v := range r.Header {
+		kv := fmt.Sprintf("Http_%s=%s", strings.Replace(k, "-", "_", -1), v[0])
+		batchData.Envs.Header = kv
+	}
+	batchData.Envs.Method = fmt.Sprintf("Http_Method=%s", r.Method)
+
+	if len(r.URL.RawQuery) > 0 {
+		batchData.Envs.RawQuery = fmt.Sprintf("Http_Query=%s", r.URL.RawQuery)
+	}
+
+	if len(r.URL.Path) > 0 {
+		batchData.Envs.Path = fmt.Sprintf("Http_Path=%s", r.URL.Path)
+	}
+
+	if len(r.TransferEncoding) > 0 {
+		batchData.Envs.TransferEncoding = fmt.Sprintf("Http_Transfer_Encoding=%s", r.TransferEncoding[0])
 	}
 }
 

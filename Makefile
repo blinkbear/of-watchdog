@@ -7,11 +7,11 @@ ifneq ($(.GIT_UNTRACKEDCHANGES),)
 endif
 LDFLAGS := "-s -w -X main.Version=$(.GIT_VERSION) -X main.GitCommit=$(.GIT_COMMIT)"
 
-SERVER?=ghcr.io
+SERVER?=10.119.46.41:30003/cc
 OWNER?=openfaas
 IMG_NAME?=of-watchdog
 TAG?=latest
-
+IMAGE=$(SERVER)/$(OWNER)/$(IMG_NAME)
 export GOFLAGS=-mod=vendor
 
 .PHONY: all
@@ -34,7 +34,8 @@ build:
 	@docker build \
 		--build-arg GIT_COMMIT=${.GIT_COMMIT} \
 		--build-arg VERSION=${.GIT_VERSION} \
-		-t ${.IMAGE}:${TAG} .
+		-t ${IMAGE}:${TAG} . &&\
+	docker push ${IMAGE}:${TAG}
 
 .PHONY: hashgen
 hashgen:
@@ -60,7 +61,7 @@ publish:
 	@echo  $(SERVER)/$(OWNER)/$(IMG_NAME):$(TAG) && \
 	docker buildx create --use --name=multiarch --node=multiarch && \
 	docker buildx build \
-		--platform linux/amd64,linux/arm/v7,linux/arm64 \
+		--platform linux/amd64\
 		--push=true \
         --build-arg GIT_COMMIT=$(GIT_COMMIT) \
         --build-arg VERSION=$(VERSION) \
