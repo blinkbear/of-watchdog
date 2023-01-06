@@ -84,10 +84,8 @@ func (c *BatchingController) Run(stopCh <-chan struct{}) {
 			klog.Info("Shutting down batching controller")
 			return
 		case <-time.After(c.batchWaitTimeout):
-			klog.Info("BatchingController: batchWaitTimeout")
 			c.processBatch()
 		case <-c.checkBatchDataLength:
-			klog.Info("BatchingController: checkBatchDataLength")
 			c.processBatch()
 		}
 	}
@@ -114,7 +112,6 @@ func (c *BatchingController) GetBatchData() []BatchData {
 }
 
 func (c *BatchingController) addInputsToBatchDataMap() bool {
-	klog.Infof("BatchingController: addInputsToBatchDataMap")
 	obj, shutdown := c.InputQueue.Get()
 	if shutdown {
 		klog.Infof("BatchingController: addInputsToBatchDataMap: shutdown")
