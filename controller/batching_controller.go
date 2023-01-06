@@ -23,7 +23,6 @@ type BatchingController struct {
 	batchWaitTimeout     time.Duration
 	batchDataList        []BatchData
 	InputQueue           workqueue.RateLimitingInterface
-	ResultQueue          workqueue.RateLimitingInterface
 	checkBatchDataLength chan bool
 	functionInvoker      executor.StreamingFunctionRunner
 	watchdogConfig       config.WatchdogConfig
@@ -39,8 +38,9 @@ type Env struct {
 }
 
 type BatchData struct {
-	Envs   Env
-	Inputs string
+	Envs       Env
+	Inputs     string
+	ResultChan chan string
 }
 
 // NewBatchingController creates a new BatchingController
@@ -55,7 +55,6 @@ func NewBatchingController(watchdogConfig config.WatchdogConfig, inputQueue work
 		batchWaitTimeout:     watchdogConfig.BatchWaitTimeout,
 		batchDataList:        make([]BatchData, 0),
 		InputQueue:           inputQueue,
-		ResultQueue:          resultQueue,
 		checkBatchDataLength: make(chan bool),
 		functionInvoker:      functionInvoker,
 		watchdogConfig:       watchdogConfig,
@@ -64,33 +63,31 @@ func NewBatchingController(watchdogConfig config.WatchdogConfig, inputQueue work
 }
 
 func (c *BatchingController) checkBatchDataMapLength() {
-	for {
-		length := len(c.batchDataList)
-		if length >= c.batchSize {
-			c.checkBatchDataLength <- true
-		}
-		c.checkBatchDataLength <- false
+	length := len(c.batchDataList)
+	if length >= c.batchSize {
+		c.checkBatchDataLength <- true
 	}
+	c.checkBatchDataLength <- false
 }
 
 // Run the batching controller
 func (c *BatchingController) Run(stopCh <-chan struct{}) {
 	defer c.InputQueue.ShutDown()
-	defer c.ResultQueue.ShutDown()
-	klog.Info("Starting batching controller")
-
 	for i := 0; i < c.watchdogConfig.Threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
-		go wait.Until(c.checkBatchDataMapLength, time.Second, stopCh)
+
 	}
+	go wait.Until(c.checkBatchDataMapLength, 50*time.Millisecond, stopCh)
 	for {
 		select {
 		case <-stopCh:
 			klog.Info("Shutting down batching controller")
 			return
 		case <-time.After(c.batchWaitTimeout):
+			klog.Info("BatchingController: batchWaitTimeout")
 			c.processBatch()
 		case <-c.checkBatchDataLength:
+			klog.Info("BatchingController: checkBatchDataLength")
 			c.processBatch()
 		}
 	}
@@ -126,12 +123,13 @@ func (c *BatchingController) addInputsToBatchDataMap() bool {
 	err := func(obj interface{}) error {
 		defer c.InputQueue.Done(obj)
 		var data BatchData
-		if err := json.Unmarshal([]byte(obj.(string)), &data); err != nil {
+		var ok bool
+		if data, ok = obj.(BatchData); !ok {
 			c.InputQueue.Forget(obj)
-			klog.Infof("BatchingController: addInputsToBatchDataMap: error: %v", err)
+			klog.Infof("BatchingController: addInputsToBatchDataMap: error: got %v", obj)
 			return nil
 		}
-		c.batchDataList = append(c.batchDataList, data)
+		c.AddBatchData(data)
 		c.InputQueue.Forget(obj)
 		return nil
 	}(obj)
@@ -149,6 +147,10 @@ func (c *BatchingController) processBatch() {
 	batchingDataMap := map[string]map[string]string{}
 	batchingDataMap["inputs"] = batchData
 	batchDataList := c.GetBatchData()
+	channelList := make([]chan string, 0)
+	if len(batchDataList) == 0 {
+		return
+	}
 	for _, data := range batchDataList {
 		var inputRequest map[string]map[string]string
 		if err := json.Unmarshal([]byte(data.Inputs), &inputRequest); err == nil {
@@ -157,6 +159,7 @@ func (c *BatchingController) processBatch() {
 					batchData[k] = v
 				}
 			}
+			channelList = append(channelList, data.ResultChan)
 			env := data.Envs
 			batchRequest[env] = batchingDataMap
 		}
@@ -165,7 +168,7 @@ func (c *BatchingController) processBatch() {
 
 	for env, data := range batchRequest {
 		wg.Add(1)
-		go func(env Env, data map[string]map[string]string) {
+		go func(env Env, data map[string]map[string]string, channelList []chan string) {
 			defer wg.Done()
 			var buf bytes.Buffer
 			requests, ok := json.Marshal(data)
@@ -195,8 +198,15 @@ func (c *BatchingController) processBatch() {
 			if err != nil {
 				log.Println(err.Error())
 			}
-			c.ResultQueue.Add(buf.String())
-		}(env, data)
+			result := buf.String()
+			for _, v := range data {
+				resultLength := len(v)
+				for i := 0; i < resultLength; i++ {
+					channelList[i] <- result
+				}
+			}
+
+		}(env, data, channelList)
 	}
 	wg.Wait()
 }

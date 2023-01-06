@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -165,7 +164,7 @@ func listenUntilShutdown(s *http.Server, healthcheckInterval time.Duration, writ
 		}
 	}()
 
-	if suppressLock == false {
+	if !suppressLock {
 		path, writeErr := createLockFile()
 
 		if writeErr != nil {
@@ -265,6 +264,7 @@ func makeBatchingStreamingRequestHandler(watchdogConfig config.WatchdogConfig) f
 	batchingController := controller.NewBatchingController(watchdogConfig, inputQueue, resultQueue)
 	go batchingController.Run(stopCh)
 	return func(w http.ResponseWriter, r *http.Request) {
+		resultChannel := make(chan string)
 		batchData := controller.BatchData{
 			Envs: controller.Env{
 				Header:           "",
@@ -273,7 +273,8 @@ func makeBatchingStreamingRequestHandler(watchdogConfig config.WatchdogConfig) f
 				TransferEncoding: "",
 				Method:           "",
 			},
-			Inputs: "",
+			Inputs:     "",
+			ResultChan: resultChannel,
 		}
 		if watchdogConfig.InjectCGIHeaders {
 			getEnvironmentBatchData(r, batchData)
@@ -285,24 +286,16 @@ func makeBatchingStreamingRequestHandler(watchdogConfig config.WatchdogConfig) f
 		}
 		batchData.Inputs = string(requestBody)
 		inputQueue.Add(batchData)
-		obj, shutdown := resultQueue.Get()
-		if shutdown {
-			log.Println("resultQueue is shutdown")
+		output, ok := <-resultChannel
+		if !ok {
+			log.Println("Result channel is closed")
 			return
 		}
-		output, err := func(obj interface{}) (string, error) {
-			defer resultQueue.Done(obj)
-			if data, ok := obj.(string); ok {
-				resultQueue.Forget(obj)
-				return data, nil
-			}
-			resultQueue.Forget(obj)
-			return "", errors.New("resultQueue data is not string")
-		}(obj)
 		if err != nil {
-			log.Println(err)
+			log.Printf("Fetch result from resultQueue failed: %v", err)
 			return
 		}
+		close(resultChannel)
 		w.Header().Set("Content-Type", watchdogConfig.ContentType)
 		w.Write([]byte(output))
 	}

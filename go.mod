@@ -3,10 +3,12 @@ module github.com/openfaas/of-watchdog
 go 1.18
 
 require (
+	github.com/google/uuid v1.1.2
 	github.com/openfaas/faas-middleware v1.1.0
 	github.com/prometheus/client_golang v1.11.1
 	k8s.io/apimachinery v0.26.0
 	k8s.io/client-go v0.26.0
+	k8s.io/klog/v2 v2.80.1
 )
 
 require (
@@ -21,6 +23,5 @@ require (
 	golang.org/x/sys v0.3.0 // indirect
 	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
-	k8s.io/klog/v2 v2.80.1 // indirect
 	k8s.io/utils v0.0.0-20221107191617-1a15be271d1d // indirect
 )

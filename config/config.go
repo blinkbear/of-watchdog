@@ -133,7 +133,7 @@ func New(env []string) (WatchdogConfig, error) {
 			batchsize = res
 		}
 	}
-	batchWaitTimeout := getDuration(envMap, "batch_wait_timeout", time.Millisecond*500)
+	batchWaitTimeout := getBatchingDuration(envMap, "batch_wait_timeout", time.Millisecond*500)
 	writeTimeout := getDuration(envMap, "write_timeout", time.Second*10)
 	healthcheckInterval := writeTimeout
 	if val, exists := envMap["healthcheck_interval"]; exists {
@@ -212,11 +212,34 @@ func getDuration(env map[string]string, key string, defaultValue time.Duration) 
 	return defaultValue
 }
 
+func getBatchingDuration(env map[string]string, key string, defaultValue time.Duration) time.Duration {
+	if val, exists := env[key]; exists {
+		return parseIntOrDurationValueForBatching(val, defaultValue)
+	}
+
+	return defaultValue
+}
+
 func parseIntOrDurationValue(val string, fallback time.Duration) time.Duration {
 	if len(val) > 0 {
 		parsedVal, parseErr := strconv.Atoi(val)
 		if parseErr == nil && parsedVal >= 0 {
 			return time.Duration(parsedVal) * time.Second
+		}
+	}
+
+	duration, durationErr := time.ParseDuration(val)
+	if durationErr != nil {
+		return fallback
+	}
+	return duration
+}
+
+func parseIntOrDurationValueForBatching(val string, fallback time.Duration) time.Duration {
+	if len(val) > 0 {
+		parsedVal, parseErr := strconv.Atoi(val)
+		if parseErr == nil && parsedVal >= 0 {
+			return time.Duration(parsedVal) * time.Millisecond
 		}
 	}
 
