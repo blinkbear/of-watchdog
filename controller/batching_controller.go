@@ -77,13 +77,15 @@ func (c *BatchingController) Run(stopCh <-chan struct{}) {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 
 	}
+	probeTickerPeriod := time.Duration(c.batchWaitTimeout) * time.Millisecond
+	probeTicker := time.NewTicker(probeTickerPeriod)
 	go wait.Until(c.checkBatchDataMapLength, 50*time.Millisecond, stopCh)
 	for {
 		select {
 		case <-stopCh:
 			klog.Info("Shutting down batching controller")
 			return
-		case <-time.After(c.batchWaitTimeout):
+		case <-probeTicker.C:
 			c.processBatch()
 		case <-c.checkBatchDataLength:
 			c.processBatch()
@@ -148,6 +150,7 @@ func (c *BatchingController) processBatch() {
 	if len(batchDataList) == 0 {
 		return
 	}
+	klog.Infof("BatchingController: processBatch: data: %v", len(batchDataList))
 	for _, data := range batchDataList {
 		var inputRequest map[string]map[string]string
 		if err := json.Unmarshal([]byte(data.Inputs), &inputRequest); err == nil {
@@ -155,10 +158,10 @@ func (c *BatchingController) processBatch() {
 				for k, v := range inputs {
 					batchData[k] = v
 				}
+				channelList = append(channelList, data.ResultChan)
+				env := data.Envs
+				batchRequest[env] = batchingDataMap
 			}
-			channelList = append(channelList, data.ResultChan)
-			env := data.Envs
-			batchRequest[env] = batchingDataMap
 		}
 	}
 	var wg sync.WaitGroup
@@ -196,7 +199,10 @@ func (c *BatchingController) processBatch() {
 				log.Println(err.Error())
 			}
 			result := buf.String()
+			klog.Infof("BatchingController: processBatch: channelLength: %v", len(channelList))
+
 			for _, v := range data {
+				klog.Infof("BatchingController: processBatch: data: %v", len(v))
 				resultLength := len(v)
 				for i := 0; i < resultLength; i++ {
 					channelList[i] <- result

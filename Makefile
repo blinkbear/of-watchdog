@@ -15,7 +15,7 @@ IMAGE=$(SERVER)/$(OWNER)/$(IMG_NAME)
 export GOFLAGS=-mod=vendor
 
 .PHONY: all
-all: gofmt test dist hashgen
+all: dist build
 
 .PHONY: test
 test:

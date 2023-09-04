@@ -286,6 +286,7 @@ func makeBatchingStreamingRequestHandler(watchdogConfig config.WatchdogConfig) f
 		}
 		batchData.Inputs = string(requestBody)
 		inputQueue.Add(batchData)
+		log.Println("Added batch data to input queue")
 		output, ok := <-resultChannel
 		if !ok {
 			log.Println("Result channel is closed")
